@@ -63,6 +63,58 @@ class ChessModelProvider {
    }
 }
 
+class FastAPIProvider extends ChessModelProvider {
+    constructor(apiUrl, model, temperature) {
+        super();
+        // Remove trailing slash from API URL if present
+        this.apiUrl = apiUrl.replace(/\/$/, '');
+        this.model = model;
+        this.temperature = temperature;
+    }
+
+    async makeMove({ fen, history, legalMoves }) {
+        return this.retryWithBackoff(async () => {
+            console.log('Making move: ', this.formatPrompt(fen, history, legalMoves));
+            const response = await fetch(`${this.apiUrl}/generate`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    messages: [
+                        // { role: "system", content: SYSTEM_PROMPT },
+                        { role: "user", content: this.formatPrompt(fen, history, legalMoves) }
+                    ],
+                    model: this.model,
+                    temperature: parseFloat(this.temperature)
+                })
+            });
+
+            if (!response.ok) {
+                throw new Error(`FastAPI Error: ${response.status} ${response.statusText}`);
+            }
+
+            const data = await response.json();
+            if (!data.content) {
+                throw new Error('Invalid response format from FastAPI endpoint');
+            }
+
+            // Parse the response content as JSON
+            const moveData = JSON.parse(data.content);
+            return this.validateResponse(moveData, legalMoves);
+        });
+    }
+
+    formatPrompt(fen, history, legalMoves) {
+        const prompt = {
+                FEN: fen,
+                history: history || 'Opening position',
+                legal_moves: legalMoves.join(', ')
+        };
+        return JSON.stringify(prompt, null, 2);
+    }
+}
+
 class GroqProvider extends ChessModelProvider {
    constructor(apiKey, model, temperature) {
        super();
@@ -296,7 +348,12 @@ class ChessProviderFactory {
            provider: 'grok',
            modelId: 'grok-beta',
            tempRange: { min: 0.1, max: 1.0 }
-       }
+       },
+       'local chess LLM': {
+              provider: 'FastAPI',
+              modelId: 'chess-llm',
+              tempRange: { min: 0.1, max: 1.0 }
+         }
    };
 
    static createProvider(modelName, apiKey, temperature) {
@@ -312,6 +369,8 @@ class ChessProviderFactory {
                return new GeminiProvider(apiKey, config.modelId, temperature);
            case 'grok':
                return new GrokProvider(apiKey, config.modelId, temperature);
+           case 'FastAPI':
+                return new FastAPIProvider(apiKey, config.modelId, temperature);
            default:
                throw new Error(`Unknown provider: ${config.provider}`);
        }
